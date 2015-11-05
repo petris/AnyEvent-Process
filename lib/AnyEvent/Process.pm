@@ -58,7 +58,7 @@ use AnyEvent;
 use Carp;
 
 our @proc_args = qw(fh_table code on_completion args watchdog_interval on_watchdog kill_interval on_kill close_all_fds_except);
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 my $nop = sub {};
 
