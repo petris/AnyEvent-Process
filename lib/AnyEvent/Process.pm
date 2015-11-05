@@ -72,6 +72,12 @@ sub new {
 	return $self;
 }
 
+sub _yield {
+	my $cv_yield = AE::cv;
+	AE::postpone { $cv_yield->send };
+	$cv_yield->recv;
+}
+
 sub run {
 	my $self = shift;
 	my %args = @_;
@@ -310,6 +316,9 @@ sub run {
 			$job->add_timer(AE::timer $proc_args{watchdog_interval}, $proc_args{watchdog_interval}, $watchdog_cb);
 		}
 	}
+	
+	# We need this to allow AE collecting pending signals and prevent accumulation of zombies
+	$self->_yield;
 
 	return $job;
 }
