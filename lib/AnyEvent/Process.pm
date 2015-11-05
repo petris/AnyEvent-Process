@@ -18,22 +18,26 @@ sub pid {
 	return $_[0]->{pid};
 }
 
-sub add_cb {
+sub _add_cb {
 	my ($self, $cb) = @_;
 	push @{$self->{cbs}}, $cb;
 }
 
-sub add_handle {
+sub _add_handle {
 	my ($self, $handle) = @_;
 	push @{$self->{handles}}, $handle;
 }
 
-sub add_timer {
+sub _add_timer {
 	my ($self, $timer) = @_;
 	push @{$self->{timers}}, $timer;
 }
 
-sub cancel_timers {
+sub _remove_cbs {
+	undef $_[0]->{cbs};
+}
+
+sub _remove_timers {
 	my $self = shift;
 	undef $_ foreach @{$self->{timers}};
 	undef $self->{timers};
@@ -55,6 +59,8 @@ use Carp;
 
 our @proc_args = qw(fh_table code on_completion args watchdog_interval on_watchdog kill_interval on_kill close_all_fds_except);
 our $VERSION = '0.01';
+
+my $nop = sub {};
 
 sub new {
 	my $ref = shift;
@@ -78,13 +84,50 @@ sub _yield {
 	$cv_yield->recv;
 }
 
+sub _create_callback_factory {
+	my $self = shift;
+	my $on_completion = shift // $nop;
+	my $counter = 0;
+	my @on_completion_args;
+
+	my $factory = sub {
+		my $func = shift // $nop;
+
+		$counter++;
+		return sub {
+			my ($err, $rtn);
+
+			eval {
+				$rtn = $func->(@_);
+			}; $err = $@;
+
+			if (--$counter == 0) {
+				eval {
+					$on_completion->(@on_completion_args);
+				}; $err = $err || $@;
+				$on_completion_args[0]->_remove_cbs;
+			}
+
+			if ($err) {
+				croak $err;
+			}
+
+			return $rtn;
+		}
+	};
+	my $set_on_completion_args = sub {
+		@on_completion_args = @_;
+	};
+
+	return $factory, $set_on_completion_args;
+}
+
 sub run {
 	my $self = shift;
 	my %args = @_;
 	my %proc_args;
 	my @fh_table;
 	my @handles;
-	my ($last_callback, $last_callback_set_args);
 
 	# Process arguments
 	foreach my $arg (@proc_args) {
@@ -96,40 +139,8 @@ sub run {
 		croak 'Unknown arguments: ' . join ', ', keys %args;
 	}
 
-	if (defined $proc_args{on_completion}) {
-		my $counter = 0;
-		my @last_callback_args;
-
-		$last_callback = sub {
-			my $func = shift // sub {};
-
-			$counter++;
-			return sub {
-				my ($err, $rtn);
-
-				eval {
-					$rtn = $func->(@_);
-				}; $err = $@;
-
-				if (--$counter == 0) {
-					eval {
-						$proc_args{on_completion}->(@last_callback_args);
-					}; $err = $err || $@;
-				}
-
-				if ($err) {
-					croak $err;
-				}
-
-				return $rtn;
-			}
-		};
-		$last_callback_set_args = sub {
-			@last_callback_args = @_;
-		}
-	} else {
-		$last_callback = sub { $_[0] // sub {} };
-	}
+	my ($callback_factory, $set_on_completion_args) = 
+			$self->_create_callback_factory($proc_args{on_completion});
 
 	# Handle fh_table
 	for (my $i = 0; $i < $#{$proc_args{fh_table}}; $i += 2) {
@@ -199,7 +210,7 @@ sub run {
 			}
 
 			push @fh_table, [$handle, $child_fh];
-			push @handles,  [$my_fh, [on_read => $on_read, on_eof => $last_callback->()]];
+			push @handles,  [$my_fh, [on_read => $on_read, on_eof => $callback_factory->()]];
 		} else {
 			croak "Unknown redirect type '$args->[0]'";
 		}
@@ -252,7 +263,7 @@ sub run {
 			for (my $i = 0; $i < $#{$handle->[1]}; $i += 2) {
 				if (AnyEvent::Handle->can($handle->[1][$i]) and 'ARRAY' eq ref $handle->[1][$i+1]) {
 					if ($handle->[1][$i] eq 'on_eof') {
-						push @hdl_calls, [$handle->[1][$i], $last_callback->($handle->[1][$i+1][0])];
+						push @hdl_calls, [$handle->[1][$i], $callback_factory->($handle->[1][$i+1][0])];
 					} else {
 						push @hdl_calls, [$handle->[1][$i], $handle->[1][$i+1]];
 					}
@@ -268,24 +279,16 @@ sub run {
 				AE::log trace => "Calling handle method $method(" . join(', ', @{$call->[1]}) . ')';
 				$hdl->$method(@{$call->[1]});
 			}
-			$job->add_handle($hdl);
+			$job->_add_handle($hdl);
 		}
 
 		# Create callbacks
-		my $completion_cb;
-		if (defined $proc_args{on_completion}) {
-			$completion_cb = sub {
-				$job->cancel_timers();
-				AE::log info => "Process $job->{pid} finished with code $_[1].";
-				$last_callback_set_args->($job, $_[1]);
-			};
-		} else {
-			$completion_cb = sub {
-				$job->cancel_timers();
-				AE::log info => "Process $job->{pid} finished with code $_[1]";
-			};
-		}
-		$job->add_cb(AE::child $pid, $last_callback->($completion_cb));
+		my $completion_cb = sub {
+			$job->_remove_timers();
+			AE::log info => "Process $job->{pid} finished with code $_[1].";
+			$set_on_completion_args->($job, $_[1]);
+		};
+		$job->_add_cb(AE::child $pid, $callback_factory->($completion_cb));
 
 		$self->{job} = $job;
 
@@ -293,11 +296,11 @@ sub run {
 		my $on_kill = $proc_args{on_kill} // sub { $_[0]->kill(9) };
 		if (defined $proc_args{kill_interval}) {
 			my $kill_cb = sub { 
-				$job->cancel_timers();
+				$job->_remove_timers();
 				AE::log warn => "Process $job->{pid} is running too long, killing it.";
 				$on_kill->($job);
 			};
-			$job->add_timer(AE::timer $proc_args{kill_interval}, 0, $kill_cb);
+			$job->_add_timer(AE::timer $proc_args{kill_interval}, 0, $kill_cb);
 		}
 		if (defined $proc_args{watchdog_interval} or defined $proc_args{on_watchdog}) {
 			unless (defined $proc_args{watchdog_interval} &&
@@ -308,12 +311,12 @@ sub run {
 			my $watchdog_cb = sub {
 				AE::log info => "Executing watchdog for process $job->{pid}.";
 				unless ($proc_args{on_watchdog}->($job)) {
-					$job->cancel_timers();
+					$job->_remove_timers();
 					AE::log warn => "Watchdog for process $job->{pid} failed, killing it.";
 					$on_kill->($job);
 				}
 			};
-			$job->add_timer(AE::timer $proc_args{watchdog_interval}, $proc_args{watchdog_interval}, $watchdog_cb);
+			$job->_add_timer(AE::timer $proc_args{watchdog_interval}, $proc_args{watchdog_interval}, $watchdog_cb);
 		}
 	}
 	
