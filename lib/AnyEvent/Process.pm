@@ -62,30 +62,15 @@ our $VERSION = '0.01';
 
 my $nop = sub {};
 
-sub new {
-	my $ref = shift;
-	my $self = bless {}, $ref;
-	my %args = @_;
-
-	foreach my $arg (@proc_args) {
-		$self->{$arg} = delete $args{$arg} if defined $args{$arg};
-	}
-
-	if (%args) {
-		croak 'Unknown arguments: ' . join ', ', keys %args;
-	}
-
-	return $self;
-}
-
 sub _yield {
 	my $cv_yield = AE::cv;
 	AE::postpone { $cv_yield->send };
 	$cv_yield->recv;
 }
 
+# Create a callback factory. This is needed to execute on_completion after all
+# other callbacks. 
 sub _create_callback_factory {
-	my $self = shift;
 	my $on_completion = shift // $nop;
 	my $counter = 0;
 	my @on_completion_args;
@@ -122,6 +107,22 @@ sub _create_callback_factory {
 	return $factory, $set_on_completion_args;
 }
 
+sub new {
+	my $ref = shift;
+	my $self = bless {}, $ref;
+	my %args = @_;
+
+	foreach my $arg (@proc_args) {
+		$self->{$arg} = delete $args{$arg} if defined $args{$arg};
+	}
+
+	if (%args) {
+		croak 'Unknown arguments: ' . join ', ', keys %args;
+	}
+
+	return $self;
+}
+
 sub run {
 	my $self = shift;
 	my %args = @_;
@@ -140,7 +141,7 @@ sub run {
 	}
 
 	my ($callback_factory, $set_on_completion_args) = 
-			$self->_create_callback_factory($proc_args{on_completion});
+			_create_callback_factory($proc_args{on_completion});
 
 	# Handle fh_table
 	for (my $i = 0; $i < $#{$proc_args{fh_table}}; $i += 2) {
@@ -393,8 +394,8 @@ This module starts a new process. It allows connecting file descriptor in the
 new process to files or handles (both to perl handles or to 
 L<AnyEvent:Handle|AnyEvent:Handle>).
 
-It is possible to monitor the process execution using watchdog callback or kill
-the process after defined time.
+It is possible to monitor the process execution using a watchdog callback or 
+kill the process after a defined time.
 
 =head1 METHODS
 
@@ -408,7 +409,7 @@ Arguments:
 
 =item fh_table (optional)
 
-Can be used to define open files in a created process. Syntax of this option
+Can be used to define opened files in a created process. Syntax of this option
 is the following:
 
   [
@@ -423,14 +424,14 @@ where
 
 =item HANDLE
 
-is a handle reference or filedescriptor number, which will be opened in the new
-process.
+is a handle reference or a filedescriptor number, which will be opened in the 
+new process.
 
 =item DIRECTION
 
-can be C<E<gt>> if the HANDLE in new process shall be opened for writting, 
+can be C<E<gt>> if the HANDLE in the new process shall be opened for writting, 
 C<E<lt>> if it shall be opened for reading or C<+E<lt>> if it shall be opened
-in read-write mode.
+in the read-write mode.
 
 =item TYPE
 
@@ -440,14 +441,14 @@ Following types are supported:
 
 =item pipe
 
-Opens unidirectional pipe or bidirectional socket (depends on DIRECTION) between
-current and new process. ARGS can be a glob reference, then the second and of
-pipe or socket pair is connected to it, or C<handle =E<gt> [handle_args...]>, 
-where handle_args are argument passed to L<AnyEvent::Handle|AnyEvent::Handle>
-constructor, which will be connected to the second end of pipe or socket. In the
-case handle_args is in the form of C<method =E<gt> [method_args...]> and method 
-is AnyEvent::Handle method, then this method is called with method_args, after 
-handle is instantiated.
+Opens an unidirectional pipe or a bidirectional socket (depends on the DIRECTION) 
+between the current and the new process. ARGS can be a glob reference, then the 
+second end of the pipe or socket pair is connected to it, or C<handle =E<gt> 
+[handle_args...]>, where handle_args are an argument passed to the 
+L<AnyEvent::Handle|AnyEvent::Handle> constructor, which will be connected to the
+second end of the pipe or socket. In the a case handle_args is in the form of 
+C<method =E<gt> [method_args...]> and method is AnyEvent::Handle method, then 
+this method is called with method_args, after the handle is instantiated.
 
 Example:
   \*STDOUT => ['pipe', '>', handle => [push_read  => [line => \&reader]]]
@@ -461,13 +462,13 @@ Example:
 
 =item decorate
 
-Decorate every line written to the HANDLE by child. DIRECTION must be C<E<gt>>.
-ARGS are in the form C<DECORATOR, OUTPUT>. OUTPUT is a glob reference and 
-specifies a file handle, into which decorated lines are written. Decorator is a
-string or a code reference. If the decorator is a string, it is prepended to 
-every line written by started process. If DECORATOR is a code reference, it is 
-called for each line written to HANDLE with that line as argument and its return 
-value is written to OUTPUT.
+Decorate every line written to the HANDLE by the child. The DIRECTION must be 
+C<E<gt>>. ARGS are in the form C<DECORATOR, OUTPUT>. OUTPUT is a glob reference
+and specifies a file handle, into which decorated lines are written. Decorator is
+a string or a code reference. If the decorator is a string, it is prepended to 
+every line written by the started process. If the DECORATOR is a code reference, 
+it is called for each line written to the HANDLE with that line as its argument 
+and its return value is written to the OUTPUT.
 
 Example:
   \*STDERR => ['decorate', '>', 'Child STDERR: ', \*STDERR]
@@ -490,17 +491,17 @@ Callback, which is executed when the process finishes. It receives
 AnyEvent::Process::Job instance as the first argument and exit code as the 
 second argument.
 
-It is called after all AnyEvent::Handle callback specified in fh_table.
+It is called after all AnyEvent::Handle callbacks specified in the fh_table.
 
 =item watchdog_interval (in seconds, optional)
 
-How often a watchdog shall be called. If undefined or set to 0, watchdog
+How often a watchdog shall be called. If undefined or set to 0, the watchdog
 functionality is disabled. 
 
 =item on_watchdog (optional)
 
-Watchdog callback, receives AnyEvent::Process::Job instance as an argument.
-If it returns false value, watched process is killed (see on_kill). 
+Watchdog callback, receives AnyEvent::Process::Job instance as its argument.
+If it returns false value, the watched process is killed (see on_kill). 
 
 =item kill_interval (in seconds, optional)
 
@@ -510,14 +511,14 @@ killed.
 =item on_kill (optional, sends SIGKILL by default)
 
 Called, when the process shall be killed. Receives AnyEvent::Process::Job 
-instance as an argument.
+instance as its argument.
 
 =back
 
 =head2 run
 
-Run a process. Any argument specified to constructor can be overridden here.
-Returns AnyEvent::Process::Job, which represents the new process, or undef on
+Run a process. Any argument specified to the constructor can be overridden here.
+Returns AnyEvent::Process::Job, which represents the new process, or undef on an
 error.
 
 =over 4
@@ -532,11 +533,11 @@ Returns PID of the process.
 
 =item kill
 
-Send signal specified as argument to the process.
+Send signal specified as the argument to the process.
 
 =item close
 
-Close all pipes and socketpairs between this process and child.
+Close all pipes and socketpairs between this process and the child.
 
 =back
 
@@ -544,23 +545,23 @@ Close all pipes and socketpairs between this process and child.
 
 =head2 kill
 
-Run kill method of latest created AnyEvent::Process::Job - sends signal 
-specified as argument to the process.
+Run the kill method of the latest created AnyEvent::Process::Job - sends signal
+specified as its argument to the process.
 
 =head2 pid
 
-Run pid method of latest created AnyEvent::Process::Job - returns PID of the
-process.
+Run the pid method of the latest created AnyEvent::Process::Job - returns PID of
+the process.
 
 =head2 close
 
-Run close method of latest created AnyEvent::Process::Job.
+Run the close method of the latest created AnyEvent::Process::Job.
 
 =head1 SEE ALSO
 
 L<AnyEvent> - Event framework for PERL.
 
-L<AnyEvent::Subprocess> - Similar module, but with more dependencies and little
+L<AnyEvent::Subprocess> - Similar module, but with more dependencies and a little
 more complicated usage.
 
 =head1 AUTHOR
